@@ -1,0 +1,104 @@
+# © 2026 Satyendra Singh. All Rights Reserved.
+# Author: Satyendra Singh
+#
+# One-command local stack for RestoStream.
+#
+#   docker compose up --build
+#   open http://localhost:8080
+#
+# To exercise horizontal scale-out — two instances sharing one Redis, with distributed timers and
+# cross-instance broadcast — start the optional second instance:
+#
+#   docker compose --profile scale-out up --build
+
+name: restostream
+
+services:
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: restostream-redis
+    # The config file is mounted read-only and passed explicitly, because the entrypoint ignores a
+    # mounted redis.conf unless it is named as the first argument.
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      # Asserts more than liveness: it proves the keyspace-event flags RestoStream's low-latency
+      # breach detection depends on are actually set, so a bad config fails here rather than
+      # silently degrading alert latency in production.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG && redis-cli config get notify-keyspace-events | grep -q 'Ex\\|xE'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    networks: [restostream]
+
+  restostream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: restostream:1.0.0
+    container_name: restostream-app
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SERVER_PORT: "8080"
+      RESTOSTREAM_SLA_WAITER_RESPONSE: 5m
+      RESTOSTREAM_SLA_TABLE_TURNAROUND: 3m
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 4s
+      retries: 4
+      start_period: 40s
+    restart: unless-stopped
+    networks: [restostream]
+
+  # Optional second instance. It shares the same Redis, so the two instances compete for SLA timer
+  # claims and each broadcasts to its own connected dashboards — which is the whole point of putting
+  # the timers in Redis rather than in a JVM scheduler.
+  restostream-2:
+    profiles: ["scale-out"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: restostream:1.0.0
+    container_name: restostream-app-2
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SERVER_PORT: "8080"
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 4s
+      retries: 4
+      start_period: 40s
+    restart: unless-stopped
+    networks: [restostream]
+
+volumes:
+  redis-data:
+    name: restostream-redis-data
+
+networks:
+  restostream:
+    name: restostream-net
+    driver: bridge

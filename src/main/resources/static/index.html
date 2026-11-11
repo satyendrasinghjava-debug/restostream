@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RestoStream Floor</title>
+<!--
+  © 2026 Satyendra Singh. All Rights Reserved.
+  Author: Satyendra Singh
+
+  A dependency-free live dashboard for RestoStream. The STOMP 1.2 client below is implemented
+  inline on top of the native WebSocket API — deliberately, so that the container has no CDN
+  dependency and so the wire protocol the Java broker speaks is visible end to end in one file.
+-->
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #2a2f3a;
+    --text: #e8ebf0; --muted: #9aa3b2;
+    --free: #2E7D32; --seated: #C62828; --uncleaned: #F9A825;
+    --crit: #ff5252; --warn: #ffb300;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 16px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .spacer { flex: 1 1 auto; }
+  .pill {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+  }
+  .pill.ok { color: #7bd88f; border-color: #2c5236; }
+  .pill.bad { color: var(--crit); border-color: #5a2626; }
+  .legend { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; }
+  main { padding: 20px; display: grid; gap: 20px; grid-template-columns: 1fr; }
+  @media (min-width: 1100px) { main { grid-template-columns: 1fr 340px; } }
+  .grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  }
+  .table-card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    border-left: 5px solid var(--line); transition: border-color .2s, box-shadow .2s;
+  }
+  .table-card.FREE { border-left-color: var(--free); }
+  .table-card.SEATED { border-left-color: var(--seated); }
+  .table-card.UNCLEANED { border-left-color: var(--uncleaned); }
+  .table-card.breached { box-shadow: 0 0 0 1px var(--crit), 0 0 18px rgba(255,82,82,.25); }
+  .row { display: flex; align-items: baseline; gap: 8px; }
+  .tid { font-weight: 650; font-size: 16px; }
+  .zone { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .state { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: #0d0f13; }
+  .state.FREE { background: var(--free); color: #eafbec; }
+  .state.SEATED { background: var(--seated); color: #ffecec; }
+  .state.UNCLEANED { background: var(--uncleaned); }
+  .meta { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--free); transition: width .9s linear, background .3s; }
+  .bar.warn > i { background: var(--warn); }
+  .bar.crit > i { background: var(--crit); }
+  .countdown { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+  .countdown.crit { color: var(--crit); font-weight: 600; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 12px; padding: 5px 9px; cursor: pointer;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  button:hover:not(:disabled) { border-color: #3c4454; background: #242936; }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  aside { display: flex; flex-direction: column; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+  .panel h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+  .feed { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+  .alert { border-left: 3px solid var(--warn); background: var(--panel-2); padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+  .alert.CRITICAL { border-left-color: var(--crit); }
+  .alert time { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted);
+         max-height: 200px; overflow: auto; white-space: pre-wrap; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+  input[type=range] { width: 100%; }
+  .empty { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RestoStream <span>live floor</span></h1>
+  <span id="conn" class="pill">connecting…</span>
+  <span id="count" class="pill">0 tables</span>
+  <div class="spacer"></div>
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--free)"></i>FREE</span>
+    <span><i class="swatch" style="background:var(--seated)"></i>SEATED</span>
+    <span><i class="swatch" style="background:var(--uncleaned)"></i>UNCLEANED</span>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div id="grid" class="grid"><p class="empty">Waiting for the floor plan…</p></div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <h2>SLA alerts</h2>
+      <div id="alerts" class="feed"><p class="empty">No breaches.</p></div>
+    </div>
+
+    <div class="panel">
+      <h2>CCTV motion simulator</h2>
+      <label for="roi">Table</label>
+      <select id="roi" style="width:100%;margin-bottom:10px;padding:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px"></select>
+      <label for="ratio">Motion ratio: <b id="ratioVal">0.25</b></label>
+      <input id="ratio" type="range" min="0" max="1" step="0.01" value="0.25">
+      <div class="actions" style="margin-top:10px">
+        <button id="postAlert">Post one alert</button>
+        <button id="burst">Post 3 (confirm)</button>
+      </div>
+      <div id="cctvOut" class="log" style="margin-top:10px"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Protocol log</h2>
+      <div id="log" class="log"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+'use strict';
+/* ------------------------------------------------------------------ *
+ * Minimal STOMP 1.2 client over the native WebSocket API.
+ * © 2026 Satyendra Singh. All Rights Reserved. Author: Satyendra Singh
+ * ------------------------------------------------------------------ */
+const NULL = '\u0000';
+
+function escapeHeader(v) {
+  return String(v).replace(/\\/g, '\\\\').replace(/:/g, '\\c')
+                  .replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+function unescapeHeader(v) {
+  return v.replace(/\\(.)/g, (_, c) =>
+    c === 'c' ? ':' : c === 'n' ? '\n' : c === 'r' ? '\r' : c === '\\' ? '\\' : c);
+}
+function buildFrame(command, headers, body) {
+  let out = command + '\n';
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (v !== undefined && v !== null) out += escapeHeader(k) + ':' + escapeHeader(v) + '\n';
+  }
+  out += '\n' + (body || '') + NULL;
+  return out;
+}
+function parseFrames(buffer) {
+  const frames = [];
+  let rest = buffer;
+  for (;;) {
+    // A bare EOL between frames is a server heart-beat.
+    while (rest.startsWith('\n') || rest.startsWith('\r\n')) {
+      rest = rest.startsWith('\r\n') ? rest.slice(2) : rest.slice(1);
+    }
+    const end = rest.indexOf(NULL);
+    if (end === -1) break;
+    const raw = rest.slice(0, end);
+    rest = rest.slice(end + 1);
+    const split = raw.indexOf('\n\n');
+    const head = split === -1 ? raw : raw.slice(0, split);
+    const body = split === -1 ? '' : raw.slice(split + 2);
+    const lines = head.split('\n');
+    const command = lines.shift().trim();
+    const headers = {};
+    for (const line of lines) {
+      const colon = line.indexOf(':');
+      if (colon > 0) {
+        const name = unescapeHeader(line.slice(0, colon));
+        if (!(name in headers)) headers[name] = unescapeHeader(line.slice(colon + 1));
+      }
+    }
+    if (command) frames.push({ command, headers, body });
+  }
+  return { frames, rest };
+}
+
+class StompClient {
+  constructor(url) {
+    this.url = url;
+    this.buffer = '';
+    this.subs = new Map();
+    this.nextId = 0;
+    this.handlers = { connect: [], close: [], error: [] };
+    this.backoff = 500;
+  }
+  on(event, fn) { this.handlers[event].push(fn); return this; }
+  emit(event, arg) { this.handlers[event].forEach(fn => fn(arg)); }
+
+  connect() {
+    this.ws = new WebSocket(this.url, ['v12.stomp']);
+    this.ws.onopen = () => this.ws.send(buildFrame('CONNECT', {
+      'accept-version': '1.2,1.1,1.0', host: location.hostname, 'heart-beat': '10000,10000'
+    }));
+    this.ws.onmessage = (event) => {
+      this.buffer += typeof event.data === 'string' ? event.data : '';
+      const parsed = parseFrames(this.buffer);
+      this.buffer = parsed.rest;
+      parsed.frames.forEach(f => this.onFrame(f));
+    };
+    this.ws.onclose = () => { this.emit('close'); setTimeout(() => this.reconnect(), this.backoff); };
+    this.ws.onerror = () => this.emit('error');
+  }
+  reconnect() { this.backoff = Math.min(this.backoff * 2, 10000); this.connect(); }
+
+  onFrame(frame) {
+    if (frame.command === 'CONNECTED') {
+      this.backoff = 500;
+      this.emit('connect', frame.headers);
+      // Re-establish subscriptions after a reconnect.
+      for (const [id, sub] of this.subs) this.sendSubscribe(id, sub.destination);
+      return;
+    }
+    if (frame.command === 'MESSAGE') {
+      const sub = this.subs.get(frame.headers.subscription);
+      if (sub) sub.callback(frame);
+      return;
+    }
+    if (frame.command === 'ERROR') this.emit('error', frame);
+  }
+
+  sendSubscribe(id, destination) {
+    this.ws.send(buildFrame('SUBSCRIBE', { id, destination, ack: 'auto' }));
+  }
+  subscribe(destination, callback) {
+    const id = 'sub-' + (this.nextId++);
+    this.subs.set(id, { destination, callback });
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.sendSubscribe(id, destination);
+    return id;
+  }
+  send(destination, body) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    const payload = JSON.stringify(body);
+    this.ws.send(buildFrame('SEND', {
+      destination, 'content-type': 'application/json;charset=utf-8'
+    }, payload));
+    return true;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Dashboard
+ * ------------------------------------------------------------------ */
+const el = (id) => document.getElementById(id);
+const tables = new Map();
+const ticks = new Map();
+const logLines = [];
+
+function log(line) {
+  logLines.unshift(new Date().toLocaleTimeString() + '  ' + line);
+  if (logLines.length > 80) logLines.pop();
+  el('log').textContent = logLines.join('\n');
+}
+
+function fmt(ms) {
+  if (ms == null) return '—';
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+}
+
+function render() {
+  const grid = el('grid');
+  const ids = [...tables.keys()].sort();
+  el('count').textContent = ids.length + ' tables';
+  if (!ids.length) { grid.innerHTML = '<p class="empty">No tables provisioned.</p>'; return; }
+
+  grid.innerHTML = '';
+  for (const id of ids) {
+    const t = tables.get(id);
+    const tick = ticks.get(id);
+    const card = document.createElement('div');
+    card.className = 'table-card ' + t.state + (t.slaBreached ? ' breached' : '');
+
+    const remaining = tick ? tick.remainingMillis : null;
+    const armed = t.slaArmed === true || !!tick;
+    let severity = '';
+    if (armed && remaining !== null) {
+      severity = remaining === 0 ? 'crit' : remaining < 60000 ? 'warn' : '';
+    }
+
+    card.innerHTML = `
+      <div class="row">
+        <span class="tid">${id}</span>
+        <span class="zone">${t.zone || ''}</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="state ${t.state}">${t.state}</span>
+      </div>
+      <div class="meta">
+        <span>${t.seats} seats${t.occupancy ? ' · ' + t.occupancy + ' guests' : ''}</span>
+        <span class="countdown ${severity}">${armed ? (t.slaKind === 'WAITER_RESPONSE' ? 'waiter' : 'bussing') + ' ' + fmt(remaining) : 'no SLA'}</span>
+      </div>
+      <div class="bar ${severity}"><i style="width:${armed && remaining !== null ? Math.max(2, Math.min(100, remaining / 3000)) : 0}%"></i></div>
+      <div class="actions">
+        <button data-a="GUEST_SEATED" data-t="${id}" ${t.state !== 'FREE' ? 'disabled' : ''}>Seat</button>
+        <button data-a="WAITER_ATTENDED" data-t="${id}" ${t.state !== 'SEATED' ? 'disabled' : ''}>Waiter ack</button>
+        <button data-a="GUEST_DEPARTED" data-t="${id}" ${t.state !== 'SEATED' ? 'disabled' : ''}>Depart</button>
+        <button data-a="CLEANING_COMPLETED" data-t="${id}" ${t.state !== 'UNCLEANED' ? 'disabled' : ''}>Cleaned</button>
+      </div>`;
+    grid.appendChild(card);
+  }
+
+  const picker = el('roi');
+  if (picker.options.length !== ids.length) {
+    picker.innerHTML = ids.map(i => `<option value="${i}">${i}</option>`).join('');
+  }
+}
+
+function upsert(snapshot) {
+  tables.set(snapshot.tableId, snapshot);
+  if (!snapshot.slaArmed) ticks.delete(snapshot.tableId);
+  render();
+}
+
+function showAlert(alert) {
+  const feed = el('alerts');
+  if (feed.querySelector('.empty')) feed.innerHTML = '';
+  const node = document.createElement('div');
+  node.className = 'alert ' + alert.severity;
+  node.innerHTML = `<b>${alert.tableId}</b> — ${alert.message}
+    <time>${alert.severity} · ${alert.slaKind} · detected by ${alert.detectedBy}
+    · ${Math.round(alert.overdueMillis / 1000)}s overdue</time>`;
+  feed.prepend(node);
+  while (feed.children.length > 25) feed.lastChild.remove();
+}
+
+const client = new StompClient((location.protocol === 'https:' ? 'wss://' : 'ws://')
+  + location.host + '/ws/stomp');
+
+client.on('connect', (headers) => {
+  el('conn').textContent = 'connected · STOMP ' + headers.version;
+  el('conn').className = 'pill ok';
+  log('CONNECTED session=' + headers.session + ' heart-beat=' + headers['heart-beat']);
+
+  client.subscribe('/topic/tables', (frame) => {
+    const payload = JSON.parse(frame.body);
+    const kind = frame.headers['content-kind'];
+    if (Array.isArray(payload)) { payload.forEach(upsert); log('FLOOR_SNAPSHOT ' + payload.length + ' tables'); }
+    else { upsert(payload); log('TABLE_STATE ' + payload.tableId + ' -> ' + payload.state + ' (' + kind + ')'); }
+  });
+  client.subscribe('/topic/sla-alerts', (frame) => {
+    const alert = JSON.parse(frame.body);
+    showAlert(alert);
+    log('SLA_ALERT ' + alert.tableId + ' ' + alert.slaKind + ' ' + alert.severity);
+  });
+  client.subscribe('/topic/timers', (frame) => {
+    JSON.parse(frame.body).forEach(t => ticks.set(t.tableId, t));
+    render();
+  });
+  client.subscribe('/topic/command-results', (frame) => {
+    const result = JSON.parse(frame.body);
+    log('COMMAND ' + result.status + ' ' + (result.tableId || '') + ' — ' + result.message);
+    if (result.snapshot) upsert(result.snapshot);
+  });
+});
+client.on('close', () => {
+  el('conn').textContent = 'disconnected · retrying';
+  el('conn').className = 'pill bad';
+});
+client.on('error', (frame) => log('ERROR ' + (frame ? frame.headers.message : 'socket failure')));
+client.connect();
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-a]');
+  if (!button) return;
+  const sent = client.send('/app/tables/signal', {
+    tableId: button.dataset.t,
+    signal: button.dataset.a,
+    occupancy: button.dataset.a === 'GUEST_SEATED' ? 2 : 0,
+    actor: 'dashboard-ui',
+    correlationId: 'ui-' + Date.now()
+  });
+  log((sent ? 'SEND ' : 'SEND FAILED ') + button.dataset.a + ' ' + button.dataset.t);
+});
+
+el('ratio').addEventListener('input', (e) => { el('ratioVal').textContent = e.target.value; });
+
+async function postMotion(times) {
+  const tableId = el('roi').value;
+  const ratio = parseFloat(el('ratio').value);
+  const out = [];
+  for (let i = 0; i < times; i++) {
+    const response = await fetch('/api/v1/ingest/cctv/motion', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        tableId, cameraId: 'ui-simulator', motionRatio: ratio,
+        pixelDelta: Math.round(ratio * 90000), occupancyHint: 2, confidence: 0.9
+      })
+    });
+    const verdict = await response.json();
+    out.push(verdict.disposition + (verdict.emittedSignal ? ' -> ' + verdict.emittedSignal : '')
+      + '  [' + verdict.narrative + ']');
+  }
+  el('cctvOut').textContent = out.join('\n');
+  log('CCTV ' + times + ' alert(s) ratio=' + ratio + ' -> ' + out[out.length - 1]);
+}
+el('postAlert').addEventListener('click', () => postMotion(1));
+el('burst').addEventListener('click', () => postMotion(3));
+
+// Smooth the countdown between server ticks so the number never looks frozen.
+setInterval(() => {
+  let changed = false;
+  for (const tick of ticks.values()) {
+    if (tick.remainingMillis > 0) { tick.remainingMillis = Math.max(0, tick.remainingMillis - 1000); changed = true; }
+  }
+  if (changed) render();
+}, 1000);
+</script>
+</body>
+</html>

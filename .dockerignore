@@ -1,0 +1,16 @@
+# © 2026 Satyendra Singh. All Rights Reserved.
+# Author: Satyendra Singh
+target/
+**/target/
+.git/
+.gitignore
+.idea/
+*.iml
+.vscode/
+.mvn/
+mvnw
+mvnw.cmd
+*.log
+docker-compose*.yml
+README.md
+.DS_Store

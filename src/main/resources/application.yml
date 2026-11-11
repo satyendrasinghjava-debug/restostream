@@ -1,0 +1,172 @@
+# © 2026 Satyendra Singh. All Rights Reserved.
+# Author: Satyendra Singh
+#
+# RestoStream — real-time reactive restaurant table management middleware.
+#
+# Every value below is bound into the immutable RestoStreamProperties record tree and validated at
+# startup, so a mistyped key fails the boot rather than silently defaulting at runtime.
+
+spring:
+  application:
+    name: restostream
+  main:
+    web-application-type: reactive
+    banner-mode: console
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+      timeout: 2s
+      connect-timeout: 2s
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 32
+          max-idle: 16
+          min-idle: 4
+          max-wait: 2s
+        shutdown-timeout: 200ms
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+  codec:
+    max-in-memory-size: 256KB
+  webflux:
+    base-path: /
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  netty:
+    connection-timeout: 5s
+    idle-timeout: 0s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    redis:
+      enabled: true
+  metrics:
+    tags:
+      application: restostream
+
+logging:
+  level:
+    root: INFO
+    com.satyendra.restostream: INFO
+    # Uncomment while diagnosing a dashboard or camera issue.
+    # com.satyendra.restostream.stomp: DEBUG
+    # com.satyendra.restostream.ingestion: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+
+restostream:
+
+  redis:
+    # Root namespace for every key written. Change it to host several restaurants, or several
+    # environments, on one Redis instance without collision.
+    key-prefix: ${RESTOSTREAM_KEY_PREFIX:restostream}
+    database: ${REDIS_DATABASE:0}
+
+  sla:
+    # The five-minute waiter-response SLA from the specification. A seated table that no waiter
+    # acknowledges within this window raises an asynchronous CRITICAL alert.
+    waiter-response: ${RESTOSTREAM_SLA_WAITER_RESPONSE:5m}
+    # Turnaround SLA for a vacated table awaiting bussing. Set to 0 to disable.
+    table-turnaround: ${RESTOSTREAM_SLA_TABLE_TURNAROUND:3m}
+
+  timers:
+    # Low-latency detection: Redis publishes a key-expiry event the moment a deadline elapses.
+    # Requires `notify-keyspace-events Ex` on the Redis server, which docker/redis/redis.conf sets.
+    keyspace-notifications-enabled: true
+    keyspace-pattern: "__keyevent@*__:expired"
+    # Lossless detection: a sorted-set sweep that cannot drop a deadline the way a message can.
+    # This is the delivery guarantee; the notification above is only the latency optimisation.
+    sweep-enabled: true
+    sweep-interval: 1s
+    sweep-batch-size: 256
+    # Live countdown broadcast to /topic/timers so every dashboard shows the same remaining time.
+    countdown-enabled: true
+    countdown-interval: 5s
+    # Repairs a snapshot that claims an armed SLA with no indexed deadline, and vice versa.
+    drift-reconcile-enabled: true
+    drift-reconcile-interval: 30s
+
+  ingestion:
+    buffer-size: 512
+    concurrency-per-source: 16
+    housekeeping-interval: 5m
+    cctv:
+      enabled: true
+      source-id: cctv-motion
+      # The complete occupancy-detection rule set: four numbers and two durations.
+      # No model, no inference, no GPU — see CctvMotionSignalSource for the rationale.
+      occupied-motion-ratio: 0.18   # at or above this fraction of changed pixels => occupied
+      vacant-motion-ratio: 0.04     # at or below this fraction => vacant
+      confirmation-frames: 3        # consecutive qualifying alerts before a judgement is trusted
+      min-confidence: 0.45          # alerts below this are discarded without disturbing evidence
+      emit-debounce: 20s            # at most one emitted signal per table per window
+      track-retention: 30m          # per-table evidence is evicted after this much silence
+
+  stomp:
+    endpoint: /ws/stomp
+    application-prefix: /app
+    topic-prefix: /topic
+    outbound-buffer-size: 256
+    heartbeat-send: 10s
+    heartbeat-receive: 10s
+    session-idle-timeout: 5m
+
+  layout:
+    provision-on-startup: true
+    # Provisioning is idempotent (HSETNX), so a rolling restart never resets a live dining room.
+    tables:
+      - id: T-01
+        zone: WINDOW
+        seats: 2
+      - id: T-02
+        zone: WINDOW
+        seats: 2
+      - id: T-03
+        zone: WINDOW
+        seats: 4
+      - id: T-04
+        zone: MAIN
+        seats: 4
+      - id: T-05
+        zone: MAIN
+        seats: 4
+      - id: T-06
+        zone: MAIN
+        seats: 6
+      - id: T-07
+        zone: MAIN
+        seats: 6
+      - id: T-08
+        zone: PATIO
+        seats: 2
+      - id: T-09
+        zone: PATIO
+        seats: 4
+      - id: T-10
+        zone: PATIO
+        seats: 8
+      - id: T-11
+        zone: PRIVATE
+        seats: 10
+      - id: T-12
+        zone: BAR
+        seats: 1

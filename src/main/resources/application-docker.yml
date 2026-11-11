@@ -1,0 +1,20 @@
+# © 2026 Satyendra Singh. All Rights Reserved.
+# Author: Satyendra Singh
+#
+# Profile activated inside the container image. Only the values that genuinely differ from the
+# defaults are repeated here, so there is one place to look for "what changes in Docker".
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.satyendra.restostream: INFO
